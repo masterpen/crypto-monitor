@@ -1,0 +1,54 @@
+# 量化交易系统配置
+
+# 交易所配置
+binance:
+  api_key: "tExj3DjBbbgFNa568dEkQ2Rb4ypOOH0k7KP0uZ9v8nSlTvsCMFCziLzgfAnmfkcG"
+  api_secret: "iIdWP3Coi8GYFkaTnRrSwVPdjr83ieTQSfXawlgJsyN05qKuP6itzFd41pLVd7Ut"
+  testnet: false            # false=实盘, true=测试网
+  base_url: "https://api.binance.com/api/v3"
+  
+# 交易品种
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  
+# 数据配置
+data:
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+  postgres:
+    host: "localhost"
+    port: 5432
+    database: "quant_db"
+    user: "postgres"
+    password: "postgres"
+
+# 策略配置
+strategies:
+  trend:
+    enabled: true
+    fast_period: 10
+    slow_period: 30
+  mean_reversion:
+    enabled: true
+    period: 20
+    std_multiplier: 2.0
+  arbitrage:
+    enabled: true
+    spread_threshold: 0.01
+
+# 风控配置
+risk:
+  max_position_pct: 0.2  # 最大仓位比例
+  max_daily_loss: 0.05   # 日度最大亏损
+  stop_loss_pct: 0.02    # 止损比例
+
+# 回测配置
+backtest:
+  start_date: "2024-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 10000
+  commission: 0.001
+  slippage: 0.0005
