@@ -11,21 +11,30 @@ UIDS = os.environ.get('WXPUSHER_UIDS') # 可以是多个uid，用逗号分隔
 
 def get_top_symbols(limit=100):
     url = "https://api.binance.com/api/v3/ticker/24hr"
-    resp = requests.get(url)
-    data = resp.json()
-    
-    # 获取USDT交易对，过滤掉杠杆代币 (UP/DOWN/BULL/BEAR)
-    exclude_keywords = ['UPUSDT', 'DOWNUSDT', 'BULLUSDT', 'BEARUSDT', 'USDCUSDT', 'BUSDUSDT', 'FDUSDUSDT']
-    valid_symbols = []
-    
-    for d in data:
-        symbol = d['symbol']
-        if symbol.endswith('USDT') and not any(kw in symbol for kw in exclude_keywords):
-            valid_symbols.append((symbol, float(d['quoteVolume'])))
+    try:
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        
+        # 如果返回不是列表（说明是报错字典），打印并返回空
+        if not isinstance(data, list):
+            print(f"币安 API 返回异常: {data}")
+            return []
             
-    # 按24小时交易额降序排序
-    valid_symbols.sort(key=lambda x: x[1], reverse=True)
-    return [x[0] for x in valid_symbols[:limit]]
+        # 获取USDT交易对，过滤掉杠杆代币 (UP/DOWN/BULL/BEAR)
+        exclude_keywords = ['UPUSDT', 'DOWNUSDT', 'BULLUSDT', 'BEARUSDT', 'USDCUSDT', 'BUSDUSDT', 'FDUSDUSDT', 'DAIUSDT']
+        valid_symbols = []
+        
+        for d in data:
+            symbol = d['symbol']
+            if symbol.endswith('USDT') and not any(kw in symbol for kw in exclude_keywords):
+                valid_symbols.append((symbol, float(d['quoteVolume'])))
+                
+        # 按24小时交易额降序排序
+        valid_symbols.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in valid_symbols[:limit]]
+    except Exception as e:
+        print(f"获取排行榜出错: {e}")
+        return []
 
 async def fetch_klines(session, symbol):
     # 使用1h级别，为了算KDJ(9,3,3)至少需要最近15-20根线，这里取30
