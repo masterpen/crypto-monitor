@@ -10,7 +10,7 @@ APP_TOKEN = os.environ.get('WXPUSHER_APP_TOKEN')
 UIDS = os.environ.get('WXPUSHER_UIDS') # 可以是多个uid，用逗号分隔
 
 def get_top_symbols(limit=100):
-    url = "https://api.binance.com/api/v3/ticker/24hr"
+    url = "https://data-api.binance.vision/api/v3/ticker/24hr"
     try:
         resp = requests.get(url, timeout=10)
         data = resp.json()
@@ -38,7 +38,7 @@ def get_top_symbols(limit=100):
 
 async def fetch_klines(session, symbol):
     # 使用1h级别，为了算KDJ(9,3,3)至少需要最近15-20根线，这里取30
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
+    url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
     try:
         async with session.get(url) as response:
             data = await response.json()
