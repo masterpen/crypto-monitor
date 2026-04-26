@@ -39,8 +39,8 @@ async def find_signals():
                     'd': current_d,
                     'j': current_j
                 })
-            except:
-                pass
+            except Exception as e:
+                print(f"获取 {symbol} 失败: {e}")
     
     # 按K值排序
     results.sort(key=lambda x: x['k'])
@@ -52,10 +52,10 @@ async def find_signals():
             flag = " ←超卖!"
         elif r['k'] < 30:
             flag = " ←接近超卖"
-        elif r['k'] > 70:
-            flag = " 超买→"
         elif r['k'] > 90:
             flag = " ←严重超买"
+        elif r['k'] > 70:
+            flag = " 超买→"
         print(f"{r['symbol']:10} K={r['k']:5.1f} D={r['d']:5.1f} J={r['j']:6.1f} {flag}")
 
 asyncio.run(find_signals())

@@ -2,6 +2,7 @@
 回测引擎模块
 支持多策略批量回测、参数优化、性能统计
 """
+import math
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -86,16 +87,20 @@ class BacktestEngine:
         self,
         initial_capital: float = 10000,
         commission: float = 0.001,
-        slippage: float = 0.0005
+        slippage: float = 0.0005,
+        quantity_precision: int = 6  # 数量小数位数，加密货币默认6位
     ):
         self.initial_capital = initial_capital
         self.commission = commission  # 手续费比例
         self.slippage = slippage      # 滑点比例
+        self.quantity_precision = quantity_precision
         self.position = Position()
         self.capital = initial_capital
         self.trades: List[Trade] = []
         self.equity_curve: List[float] = [initial_capital]
         self.daily_pnl: List[float] = []
+        self._short_margin: float = 0.0  # 做空冻结的保证金
+        self.bankrupted: bool = False     # 是否已爆仓
         
     def reset(self):
         """重置回测状态"""
@@ -104,78 +109,100 @@ class BacktestEngine:
         self.trades = []
         self.equity_curve = [self.initial_capital]
         self.daily_pnl = []
+        self._short_margin = 0.0
+        self.bankrupted = False
     
     def can_open_position(self, price: float, quantity: float) -> bool:
-        """检查是否可以开仓"""
-        required_capital = price * quantity * (1 + self.commission + self.slippage)
-        return self.capital >= required_capital
+        """检查是否可以开仓（含滑点和手续费）"""
+        fill_price = price * (1 + self.slippage)  # 最不利成交价
+        total_cost = fill_price * quantity * (1 + self.commission)
+        return self.capital >= total_cost
     
     def open_long(self, timestamp: pd.Timestamp, price: float, quantity: float, reason: str = ""):
         """开多仓"""
+        # 滑点先改变成交价，手续费基于实际成交价计算
+        fill_price = price * (1 + self.slippage)  # 买入滑点不利
+        commission_cost = fill_price * quantity * self.commission
+        total_cost = fill_price * quantity + commission_cost
+
         if not self.can_open_position(price, quantity):
-            logger.warning(f"资金不足无法开多: 需要 {price * quantity * (1 + self.commission):.2f}, 现有 {self.capital:.2f}")
+            logger.warning(f"资金不足无法开多: 需要 {total_cost:.2f}, 现有 {self.capital:.2f}")
             return False
-        
-        # 扣除资金（含手续费和滑点）
-        cost = price * quantity * (1 + self.commission + self.slippage)
-        self.capital -= cost
-        
-        # 更新持仓
+
+        # 先平掉反向持仓（平空会释放保证金）
         if self.position.side == PositionSide.SHORT:
-            # 平空开多
             self._close_short(timestamp, price)
-        
+
+        # 重新检查资金（平仓后可用资金可能变化）
+        if self.capital < total_cost:
+            logger.warning(f"平仓后资金仍不足无法开多: 需要 {total_cost:.2f}, 现有 {self.capital:.2f}")
+            return False
+
+        self.capital -= total_cost
+
         self.position = Position(
             side=PositionSide.LONG,
             quantity=quantity,
-            entry_price=price,
+            entry_price=fill_price,
             entry_time=timestamp
         )
-        
+
         self.trades.append(Trade(
             timestamp=timestamp,
             side=PositionSide.LONG,
-            price=price * (1 + self.slippage),
+            price=fill_price,
             quantity=quantity,
-            commission=price * quantity * self.commission,
+            commission=commission_cost,
             slippage=price * quantity * self.slippage,
             signal_reason=reason
         ))
-        
-        logger.debug(f"开多: 价格={price}, 数量={quantity}, 剩余资金={self.capital:.2f}")
+
+        logger.debug(f"开多: 成交价={fill_price:.4f}, 数量={quantity}, 剩余资金={self.capital:.2f}")
         return True
     
     def open_short(self, timestamp: pd.Timestamp, price: float, quantity: float, reason: str = ""):
-        """开空仓"""
-        if not self.can_open_position(price, quantity):
-            logger.warning(f"资金不足无法开空")
-            return False
-        
-        cost = price * quantity * (1 + self.commission + self.slippage)
-        self.capital -= cost
-        
+        """
+        开空仓（保证金模型）
+        做空逻辑：借币卖出，冻结保证金
+        - 冻结保证金 = 开仓价值（简化为1:1全额保证金）
+        - 卖出收入存入保证金账户
+        """
+        # 先平掉反向持仓（平多会释放资金）
         if self.position.side == PositionSide.LONG:
-            # 平多开空
             self._close_long(timestamp, price)
-        
+
+        # 滑点先改变成交价，手续费基于实际成交价计算
+        fill_price = price * (1 - self.slippage)  # 卖出滑点不利
+        commission_cost = fill_price * quantity * self.commission
+        margin = fill_price * quantity  # 全额保证金（基于实际成交价）
+        total_deduct = margin + commission_cost
+
+        if self.capital < total_deduct:
+            logger.warning(f"资金不足无法开空: 需要 {total_deduct:.2f}, 现有 {self.capital:.2f}")
+            return False
+
+        # 扣除保证金和手续费
+        self.capital -= total_deduct
+        self._short_margin = margin
+
         self.position = Position(
             side=PositionSide.SHORT,
             quantity=quantity,
-            entry_price=price,
+            entry_price=fill_price,
             entry_time=timestamp
         )
-        
+
         self.trades.append(Trade(
             timestamp=timestamp,
             side=PositionSide.SHORT,
-            price=price * (1 - self.slippage),
+            price=fill_price,
             quantity=quantity,
-            commission=price * quantity * self.commission,
+            commission=commission_cost,
             slippage=price * quantity * self.slippage,
             signal_reason=reason
         ))
-        
-        logger.debug(f"开空: 价格={price}, 数量={quantity}, 剩余资金={self.capital:.2f}")
+
+        logger.debug(f"开空: 成交价={fill_price:.4f}, 数量={quantity}, 冻结保证金={margin:.2f}, 剩余资金={self.capital:.2f}")
         return True
     
     def _close_long(self, timestamp: pd.Timestamp, price: float):
@@ -183,54 +210,96 @@ class BacktestEngine:
         if self.position.side != PositionSide.LONG:
             return
         
-        # 收入 = 数量 * 价格 * (1 - 手续费 - 滑点)
-        revenue = self.position.quantity * price * (1 - self.commission - self.slippage)
+        # 滑点先改变成交价，手续费基于实际成交价计算
+        fill_price = price * (1 - self.slippage)  # 卖出滑点不利
+        commission_cost = fill_price * self.position.quantity * self.commission
+        revenue = fill_price * self.position.quantity - commission_cost
         self.capital += revenue
         self.position = Position()
     
     def _close_short(self, timestamp: pd.Timestamp, price: float):
-        """平空仓"""
+        """
+        平空仓（买回归还借币，释放保证金）
+        盈亏 = 卖出收入 - 买回成本 = quantity * (entry_price - current_price)
+        归还资金 = 保证金 + 盈亏 - 平仓费用
+        """
         if self.position.side != PositionSide.SHORT:
             return
-        
-        revenue = self.position.quantity * price * (1 - self.commission - self.slippage)
-        self.capital += revenue
+
+        # 滑点先改变成交价，手续费基于实际成交价计算
+        fill_price = price * (1 + self.slippage)  # 买入滑点不利
+        commission_cost = fill_price * self.position.quantity * self.commission
+
+        # 做空盈亏：价格下跌赚，价格上涨亏
+        pnl = self.position.quantity * (self.position.entry_price - fill_price)
+        # 归还 = 保证金 + 盈亏 - 手续费
+        released = self._short_margin + pnl - commission_cost
+        self.capital += released
+
+        self._short_margin = 0.0
         self.position = Position()
     
     def close_position(self, timestamp: pd.Timestamp, price: float, reason: str = ""):
         """平仓"""
         if self.position.side == PositionSide.FLAT:
             return
-        
-        trade_price = price * (1 + self.slippage) if self.position.side == PositionSide.LONG else price * (1 - self.slippage)
-        
-        if self.position.side == PositionSide.LONG:
+
+        # 在平仓前保存持仓信息，因为 _close_long/_close_short 会重置 position
+        closing_side = self.position.side
+        closing_quantity = self.position.quantity
+
+        # 计算实际成交价和手续费（与 _close_long/_close_short 一致）
+        if closing_side == PositionSide.LONG:
+            fill_price = price * (1 - self.slippage)  # 卖出滑点不利
+        else:
+            fill_price = price * (1 + self.slippage)  # 买入滑点不利
+        trade_commission = fill_price * closing_quantity * self.commission
+        trade_slippage = price * closing_quantity * self.slippage
+
+        if closing_side == PositionSide.LONG:
             self._close_long(timestamp, price)
         else:
             self._close_short(timestamp, price)
-        
+
         self.trades.append(Trade(
             timestamp=timestamp,
             side=PositionSide.FLAT,
-            price=trade_price,
-            quantity=self.position.quantity if self.position.quantity > 0 else 0,
-            commission=price * self.position.quantity * self.commission,
-            slippage=price * self.position.quantity * self.slippage,
+            price=fill_price,
+            quantity=closing_quantity,
+            commission=trade_commission,
+            slippage=trade_slippage,
             signal_reason=reason
         ))
-        
-        logger.debug(f"平仓: 价格={price}, 剩余资金={self.capital:.2f}")
+
+        logger.debug(f"平仓: 成交价={fill_price:.4f}, 剩余资金={self.capital:.2f}")
     
-    def update_equity(self):
-        """更新权益曲线"""
-        # 计算当前市值
-        market_value = self.get_market_value()
+    def update_equity(self, current_price: float = 0.0):
+        """更新权益曲线，返回是否爆仓"""
+        market_value = self._calc_market_value(current_price)
         total_equity = self.capital + market_value
+
+        # 爆仓检查：总权益 <= 0 或可用资金为负
+        if total_equity <= 0 or self.capital < 0:
+            self.bankrupted = True
+            total_equity = max(total_equity, 0.0)  # 权益不低于0
+            logger.warning(f"爆仓! 总权益={total_equity:.2f}, 可用资金={self.capital:.2f}")
+
         self.equity_curve.append(total_equity)
+        return not self.bankrupted
+    
+    def _calc_market_value(self, current_price: float) -> float:
+        """计算持仓市值"""
+        if self.position.side == PositionSide.FLAT or current_price <= 0:
+            return 0.0
+        if self.position.side == PositionSide.LONG:
+            return self.position.quantity * current_price
+        else:  # SHORT
+            # 空仓市值 = 入场卖出金额 - 回购成本
+            return self.position.quantity * (2 * self.position.entry_price - current_price)
     
     def get_market_value(self) -> float:
-        """获取持仓市值（简化计算）"""
-        return 0.0  # 实时价格需要传入
+        """获取持仓市值（兼容旧接口）"""
+        return 0.0
     
     def calculate_metrics(self) -> BacktestResult:
         """计算回测指标"""
@@ -347,31 +416,76 @@ class BacktestEngine:
         strategy_func: callable,
         **strategy_params
     ) -> BacktestResult:
-        """运行回测的便捷函数"""
-        engine = BacktestEngine(self.initial_capital, self.commission, self.slippage)
+        """
+        运行回测
         
+        防未来函数逻辑：
+        - 第 i 根K线收盘时，基于 close 产生信号
+        - 信号在第 i+1 根K线的开盘价（open）执行
+        - 因此第一根K线（i=0）只产生信号，不执行交易
+        
+        策略状态同步：
+        - strategy_func 签名: (data, index, position_side='flat', **params)
+        - position_side 由引擎传入实际持仓状态，避免策略内部状态与引擎脱节
+        """
+        engine = BacktestEngine(
+            self.initial_capital, self.commission, self.slippage,
+            self.quantity_precision
+        )
+
+        pending_signal = None  # 上一根K线产生的待执行信号
+
         for i in range(len(data)):
             row = data.iloc[i]
-            current_price = row['close']
-            
-            signal = strategy_func(data, i, **strategy_params)
-            
-            if signal == 'long' and engine.position.side != PositionSide.LONG:
-                quantity = (engine.capital * 0.5) / current_price
-                if quantity > 0:
-                    engine.open_long(row.name, current_price, quantity, reason=f"策略信号:{signal}")
-            
-            elif signal == 'short' and engine.position.side != PositionSide.SHORT:
-                quantity = (engine.capital * 0.5) / current_price
-                if quantity > 0:
-                    engine.open_short(row.name, current_price, quantity, reason=f"策略信号:{signal}")
-            
-            elif signal == 'close' and engine.position.side != PositionSide.FLAT:
-                engine.close_position(row.name, current_price, reason=f"策略信号:{signal}")
-            
-            engine.update_equity()
-        
+            current_close = row['close']
+            current_open = row['open']
+
+            # 先用当前K线收盘价更新权益（反映浮动盈亏）
+            if not engine.update_equity(current_close):
+                # 爆仓，强制平仓并终止
+                engine.close_position(row.name, current_close, reason="爆仓强平")
+                break
+
+            # 基于当前K线数据产生信号，传入引擎实际持仓状态
+            current_position_side = engine.position.side.value  # 'long', 'short', 'flat'
+            entry_price = engine.position.entry_price if engine.position.side != PositionSide.FLAT else None
+            signal = strategy_func(data, i, position_side=current_position_side,
+                                   entry_price=entry_price, **strategy_params)
+
+            # 执行上一根K线产生的待执行信号（在当前K线开盘价成交）
+            if pending_signal is not None and i > 0:
+                exec_price = current_open  # 下一根K线开盘价成交
+                total_equity = engine.capital + engine._calc_market_value(exec_price)
+
+                if pending_signal == 'long' and engine.position.side != PositionSide.LONG:
+                    quantity = (total_equity * 0.5) / exec_price
+                    quantity = self._round_quantity(quantity)
+                    if quantity > 0:
+                        engine.open_long(row.name, exec_price, quantity, reason=f"策略信号:{pending_signal}")
+
+                elif pending_signal == 'short' and engine.position.side != PositionSide.SHORT:
+                    quantity = (total_equity * 0.5) / exec_price
+                    quantity = self._round_quantity(quantity)
+                    if quantity > 0:
+                        engine.open_short(row.name, exec_price, quantity, reason=f"策略信号:{pending_signal}")
+
+                elif pending_signal == 'close' and engine.position.side != PositionSide.FLAT:
+                    engine.close_position(row.name, exec_price, reason=f"策略信号:{pending_signal}")
+
+                pending_signal = None
+
+            # 记录本根K线产生的信号，等下一根K线开盘执行
+            if signal in ('long', 'short', 'close'):
+                pending_signal = signal
+
+        # 回测结束时，如果还有待执行信号或持仓，用最后一根K线收盘价处理
         if engine.position.side != PositionSide.FLAT:
-            engine.close_position(data.iloc[-1].name, data.iloc[-1]['close'], reason="回测结束")
-        
+            last_price = data.iloc[-1]['close']
+            engine.close_position(data.iloc[-1].name, last_price, reason="回测结束")
+
         return engine.calculate_metrics()
+
+    def _round_quantity(self, quantity: float) -> float:
+        """根据交易品种规则截断数量精度（向下取整到指定小数位）"""
+        factor = 10 ** self.quantity_precision
+        return math.floor(quantity * factor) / factor

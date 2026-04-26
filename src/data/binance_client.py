@@ -62,7 +62,7 @@ class BinanceClient:
 
     async def get_account(self) -> dict:
         """获取账户信息"""
-        return await self.signed_get('/api/v3/account')
+        return await self.signed_get('/account')
 
     def get_historical_klines_sync(
         self,

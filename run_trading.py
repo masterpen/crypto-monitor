@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import yaml
 from datetime import datetime
 
@@ -22,10 +23,19 @@ logger = logging.getLogger(__name__)
 def load_config():
     try:
         with open('config/config.yaml', 'r') as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
     except Exception as e:
         logger.warning(f"配置加载失败: {e}")
-        return {}
+        config = {}
+
+    # 环境变量优先于配置文件
+    binance_cfg = config.setdefault('binance', {})
+    if os.environ.get('BINANCE_API_KEY'):
+        binance_cfg['api_key'] = os.environ['BINANCE_API_KEY']
+    if os.environ.get('BINANCE_API_SECRET'):
+        binance_cfg['api_secret'] = os.environ['BINANCE_API_SECRET']
+
+    return config
 
 
 class TradingBot:
@@ -106,10 +116,11 @@ class TradingBot:
         logger.debug(f"价格更新: {price}")
 
 
-async def run_trading(symbol, strategy_name):
+async def run_trading(symbol, strategy_name, config=None):
     logger.info(f"开始实盘交易: {symbol} - {strategy_name}")
 
-    config = load_config()
+    if config is None:
+        config = load_config()
     bot = TradingBot(symbol, strategy_name, config)
 
     await bot.start()
@@ -129,7 +140,7 @@ def main():
     if not args.live:
         config.setdefault('binance', {})['testnet'] = True
 
-    asyncio.run(run_trading(args.symbol, args.strategy))
+    asyncio.run(run_trading(args.symbol, args.strategy, config))
 
 
 if __name__ == "__main__":

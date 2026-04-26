@@ -2,9 +2,9 @@
 
 # 交易所配置
 binance:
-  api_key: "tExj3DjBbbgFNa568dEkQ2Rb4ypOOH0k7KP0uZ9v8nSlTvsCMFCziLzgfAnmfkcG"
-  api_secret: "iIdWP3Coi8GYFkaTnRrSwVPdjr83ieTQSfXawlgJsyN05qKuP6itzFd41pLVd7Ut"
-  testnet: false            # false=实盘, true=测试网
+  api_key: ""    # 优先读取环境变量 BINANCE_API_KEY，为空则使用此值
+  api_secret: "" # 优先读取环境变量 BINANCE_API_SECRET，为空则使用此值
+  testnet: true  # 默认使用测试网，防止误连实盘
   base_url: "https://api.binance.com/api/v3"
   
 # 交易品种

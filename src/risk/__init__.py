@@ -341,8 +341,11 @@ class PositionSizer:
         """
         if avg_loss == 0:
             return 0
-        
-        b = avg_win / avg_loss  # 盈亏比
+
+        b = avg_win / avg_loss
+        if b == 0:
+            return 0
+
         q = 1 - win_rate
         p = win_rate
         

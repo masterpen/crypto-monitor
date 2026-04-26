@@ -1,0 +1,38 @@
+[
+    {
+        "name": "Baseline (J>0 Exit)",
+        "total_return": 0.004383842050710753,
+        "win_rate": 0.6216216216216216,
+        "profit_factor": 1.0388987872657676,
+        "sharpe_ratio": 1.122311842258101,
+        "max_drawdown": 0.5750079065589266,
+        "total_trades": 111
+    },
+    {
+        "name": "Option A (K>50 Exit)",
+        "total_return": -0.07139205411595535,
+        "win_rate": 0.6344086021505376,
+        "profit_factor": 0.755865266558225,
+        "sharpe_ratio": 1.0216391220988288,
+        "max_drawdown": 0.5995514168602621,
+        "total_trades": 93
+    },
+    {
+        "name": "Option B (J>80 Exit)",
+        "total_return": -0.030109227525242335,
+        "win_rate": 0.6413043478260869,
+        "profit_factor": 0.8996220566364914,
+        "sharpe_ratio": 1.0171657299379135,
+        "max_drawdown": 0.5856844418063163,
+        "total_trades": 92
+    },
+    {
+        "name": "Option C (J>0+SL/TP)",
+        "total_return": 0.004383842050710753,
+        "win_rate": 0.6216216216216216,
+        "profit_factor": 1.0388987872657676,
+        "sharpe_ratio": 1.122311842258101,
+        "max_drawdown": 0.5750079065589266,
+        "total_trades": 111
+    }
+]
