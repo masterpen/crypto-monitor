@@ -417,3 +417,37 @@ class SignalExecutor:
                 order_type=OrderType.MARKET,
                 quantity=position['quantity']
             )
+
+
+from .execution_algorithms import (
+    ExecutionAlgorithm,
+    AlgorithmConfig,
+    ExecutionSlice,
+    ExecutionPlan,
+    TWAPAlgorithm,
+    VWAPAlgorithm,
+    IcebergAlgorithm,
+    ExecutionEngine as AlgorithmExecutionEngine,
+    create_twap_plan,
+    create_vwap_plan
+)
+
+__all__ = [
+    'OrderType',
+    'OrderSide',
+    'OrderStatus',
+    'Order',
+    'TradeExecution',
+    'OrderManager',
+    'TradingEngine',
+    'ExecutionAlgorithm',
+    'AlgorithmConfig',
+    'ExecutionSlice',
+    'ExecutionPlan',
+    'TWAPAlgorithm',
+    'VWAPAlgorithm',
+    'IcebergAlgorithm',
+    'AlgorithmExecutionEngine',
+    'create_twap_plan',
+    'create_vwap_plan',
+]

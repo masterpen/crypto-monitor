@@ -6,10 +6,15 @@ import math
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any, Union, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
+
+from ..exceptions import (
+    BacktestError, InsufficientCapitalError, PositionError, 
+    DataNotFoundError, DataValidationError, StrategyError
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,19 +95,19 @@ class BacktestEngine:
         slippage: float = 0.0005,
         quantity_precision: int = 6  # 数量小数位数，加密货币默认6位
     ):
-        self.initial_capital = initial_capital
-        self.commission = commission  # 手续费比例
-        self.slippage = slippage      # 滑点比例
-        self.quantity_precision = quantity_precision
-        self.position = Position()
-        self.capital = initial_capital
+        self.initial_capital: float = initial_capital
+        self.commission: float = commission  # 手续费比例
+        self.slippage: float = slippage      # 滑点比例
+        self.quantity_precision: int = quantity_precision
+        self.position: Position = Position()
+        self.capital: float = initial_capital
         self.trades: List[Trade] = []
         self.equity_curve: List[float] = [initial_capital]
         self.daily_pnl: List[float] = []
         self._short_margin: float = 0.0  # 做空冻结的保证金
         self.bankrupted: bool = False     # 是否已爆仓
         
-    def reset(self):
+    def reset(self) -> None:
         """重置回测状态"""
         self.position = Position()
         self.capital = self.initial_capital
@@ -118,16 +123,46 @@ class BacktestEngine:
         total_cost = fill_price * quantity * (1 + self.commission)
         return self.capital >= total_cost
     
-    def open_long(self, timestamp: pd.Timestamp, price: float, quantity: float, reason: str = ""):
-        """开多仓"""
+    def open_long(self, timestamp: pd.Timestamp, price: float, quantity: float, reason: str = "") -> bool:
+        """
+        开多仓
+        
+        Args:
+            timestamp: 时间戳
+            price: 价格
+            quantity: 数量
+            reason: 信号原因
+            
+        Returns:
+            是否成功开仓
+            
+        Raises:
+            InsufficientCapitalError: 资金不足
+            PositionError: 持仓错误
+        """
+        if price <= 0:
+            raise PositionError(
+                f"开多仓价格必须为正数，当前值: {price}",
+                position_side="long"
+            )
+        
+        if quantity <= 0:
+            raise PositionError(
+                f"开多仓数量必须为正数，当前值: {quantity}",
+                position_side="long"
+            )
+        
         # 滑点先改变成交价，手续费基于实际成交价计算
         fill_price = price * (1 + self.slippage)  # 买入滑点不利
         commission_cost = fill_price * quantity * self.commission
         total_cost = fill_price * quantity + commission_cost
 
         if not self.can_open_position(price, quantity):
-            logger.warning(f"资金不足无法开多: 需要 {total_cost:.2f}, 现有 {self.capital:.2f}")
-            return False
+            raise InsufficientCapitalError(
+                f"资金不足无法开多: 需要 {total_cost:.2f}, 现有 {self.capital:.2f}",
+                required=total_cost,
+                available=self.capital
+            )
 
         # 先平掉反向持仓（平空会释放保证金）
         if self.position.side == PositionSide.SHORT:
@@ -135,8 +170,11 @@ class BacktestEngine:
 
         # 重新检查资金（平仓后可用资金可能变化）
         if self.capital < total_cost:
-            logger.warning(f"平仓后资金仍不足无法开多: 需要 {total_cost:.2f}, 现有 {self.capital:.2f}")
-            return False
+            raise InsufficientCapitalError(
+                f"平仓后资金仍不足无法开多: 需要 {total_cost:.2f}, 现有 {self.capital:.2f}",
+                required=total_cost,
+                available=self.capital
+            )
 
         self.capital -= total_cost
 
@@ -160,13 +198,38 @@ class BacktestEngine:
         logger.debug(f"开多: 成交价={fill_price:.4f}, 数量={quantity}, 剩余资金={self.capital:.2f}")
         return True
     
-    def open_short(self, timestamp: pd.Timestamp, price: float, quantity: float, reason: str = ""):
+    def open_short(self, timestamp: pd.Timestamp, price: float, quantity: float, reason: str = "") -> bool:
         """
         开空仓（保证金模型）
         做空逻辑：借币卖出，冻结保证金
         - 冻结保证金 = 开仓价值（简化为1:1全额保证金）
         - 卖出收入存入保证金账户
+        
+        Args:
+            timestamp: 时间戳
+            price: 价格
+            quantity: 数量
+            reason: 信号原因
+            
+        Returns:
+            是否成功开仓
+            
+        Raises:
+            InsufficientCapitalError: 资金不足
+            PositionError: 持仓错误
         """
+        if price <= 0:
+            raise PositionError(
+                f"开空仓价格必须为正数，当前值: {price}",
+                position_side="short"
+            )
+        
+        if quantity <= 0:
+            raise PositionError(
+                f"开空仓数量必须为正数，当前值: {quantity}",
+                position_side="short"
+            )
+        
         # 先平掉反向持仓（平多会释放资金）
         if self.position.side == PositionSide.LONG:
             self._close_long(timestamp, price)
@@ -178,8 +241,11 @@ class BacktestEngine:
         total_deduct = margin + commission_cost
 
         if self.capital < total_deduct:
-            logger.warning(f"资金不足无法开空: 需要 {total_deduct:.2f}, 现有 {self.capital:.2f}")
-            return False
+            raise InsufficientCapitalError(
+                f"资金不足无法开空: 需要 {total_deduct:.2f}, 现有 {self.capital:.2f}",
+                required=total_deduct,
+                available=self.capital
+            )
 
         # 扣除保证金和手续费
         self.capital -= total_deduct
@@ -302,11 +368,16 @@ class BacktestEngine:
         return 0.0
     
     def calculate_metrics(self) -> BacktestResult:
-        """计算回测指标"""
-        equity = pd.Series(self.equity_curve)
+        """
+        计算回测指标
+        
+        Returns:
+            回测结果
+        """
+        equity: pd.Series = pd.Series(self.equity_curve)
         
         # 交易统计
-        trades_df = pd.DataFrame([{
+        trades_df: pd.DataFrame = pd.DataFrame([{
             'timestamp': t.timestamp,
             'side': t.side.value,
             'price': t.price,
@@ -315,45 +386,43 @@ class BacktestEngine:
         } for t in self.trades])
         
         # 筛选出完整的买卖交易对来计算盈亏
-        closed_trades = self._analyze_trades()
+        closed_trades: List[Dict[str, Any]] = self._analyze_trades()
         
-        winning_trades = [t for t in closed_trades if t['pnl'] > 0]
-        losing_trades = [t for t in closed_trades if t['pnl'] < 0]
+        winning_trades: List[Dict[str, Any]] = [t for t in closed_trades if t['pnl'] > 0]
+        losing_trades: List[Dict[str, Any]] = [t for t in closed_trades if t['pnl'] < 0]
         
-        total_pnl = sum(t['pnl'] for t in closed_trades) if closed_trades else 0
-        total_winning = sum(t['pnl'] for t in winning_trades) if winning_trades else 0
-        total_losing = abs(sum(t['pnl'] for t in losing_trades)) if losing_trades else 0
+        total_pnl: float = sum(t['pnl'] for t in closed_trades) if closed_trades else 0
+        total_winning: float = sum(t['pnl'] for t in winning_trades) if winning_trades else 0
+        total_losing: float = abs(sum(t['pnl'] for t in losing_trades)) if losing_trades else 0
         
         # 最大回撤
-        cummax = equity.cummax()
-        drawdown = equity - cummax
-        max_drawdown = drawdown.min()
-        max_drawdown_pct = abs(max_drawdown / cummax[drawdown.idxmin()]) if cummax[drawdown.idxmin()] > 0 else 0
+        cummax: pd.Series = equity.cummax()
+        drawdown: pd.Series = equity - cummax
+        max_drawdown: float = drawdown.min()
+        max_drawdown_pct: float = abs(max_drawdown / cummax[drawdown.idxmin()]) if cummax[drawdown.idxmin()] > 0 else 0
         
         # 日收益率
-        daily_returns = equity.pct_change().dropna()
+        daily_returns: pd.Series = equity.pct_change().dropna()
         
         # 夏普比率（年化，假设252交易日）
+        sharpe_ratio: float = 0.0
         if daily_returns.std() > 0:
             sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
-        else:
-            sharpe_ratio = 0
         
         # 索提诺比率
-        downside_returns = daily_returns[daily_returns < 0]
+        downside_returns: pd.Series = daily_returns[daily_returns < 0]
+        sortino_ratio: float = 0.0
         if len(downside_returns) > 0 and downside_returns.std() > 0:
             sortino_ratio = (daily_returns.mean() / downside_returns.std()) * np.sqrt(252)
-        else:
-            sortino_ratio = 0
         
         # 卡尔玛比率
-        annual_return = daily_returns.mean() * 252
-        calmar_ratio = annual_return / max_drawdown_pct if max_drawdown_pct > 0 else 0
+        annual_return: float = daily_returns.mean() * 252
+        calmar_ratio: float = annual_return / max_drawdown_pct if max_drawdown_pct > 0 else 0
         
         # 盈利/亏损交易统计
-        n_trades = len(closed_trades)
-        n_winning = len(winning_trades)
-        n_losing = len(losing_trades)
+        n_trades: int = len(closed_trades)
+        n_winning: int = len(winning_trades)
+        n_losing: int = len(losing_trades)
         
         return BacktestResult(
             total_trades=n_trades,
@@ -375,13 +444,17 @@ class BacktestEngine:
             daily_returns=daily_returns
         )
     
-    def _analyze_trades(self) -> List[Dict]:
-        """分析交易对，计算每笔完整交易的盈亏"""
+    def _analyze_trades(self) -> List[Dict[str, Any]]:
+        """分析交易对，计算每笔完整交易的盈亏
+        
+        Returns:
+            交易分析结果列表
+        """
         # 简化实现：跟踪持仓成本计算盈亏
-        closed_trades = []
-        entry_price = None
-        entry_quantity = None
-        entry_side = None
+        closed_trades: List[Dict[str, Any]] = []
+        entry_price: Optional[float] = None
+        entry_quantity: Optional[float] = None
+        entry_side: Optional[PositionSide] = None
         
         for trade in self.trades:
             if trade.side in [PositionSide.LONG, PositionSide.SHORT]:
@@ -390,7 +463,7 @@ class BacktestEngine:
                 entry_side = trade.side
             elif trade.side == PositionSide.FLAT and entry_price is not None:
                 if entry_side == PositionSide.LONG:
-                    pnl = (trade.price - entry_price) * entry_quantity - trade.commission
+                    pnl: float = (trade.price - entry_price) * entry_quantity - trade.commission
                 else:
                     pnl = (entry_price - trade.price) * entry_quantity - trade.commission
                 
@@ -413,8 +486,8 @@ class BacktestEngine:
     def run_backtest(
         self,
         data: pd.DataFrame,
-        strategy_func: callable,
-        **strategy_params
+        strategy_func: Callable[..., str],
+        **strategy_params: Any
     ) -> BacktestResult:
         """
         运行回测
@@ -427,65 +500,128 @@ class BacktestEngine:
         策略状态同步：
         - strategy_func 签名: (data, index, position_side='flat', **params)
         - position_side 由引擎传入实际持仓状态，避免策略内部状态与引擎脱节
+        
+        Args:
+            data: K线数据
+            strategy_func: 策略函数
+            **strategy_params: 策略参数
+            
+        Returns:
+            回测结果
+            
+        Raises:
+            DataNotFoundError: 数据为空
+            DataValidationError: 数据验证失败
+            BacktestError: 回测执行错误
         """
-        engine = BacktestEngine(
+        # 验证输入数据
+        if data is None or data.empty:
+            raise DataNotFoundError("回测数据为空")
+        
+        required_columns = ['open', 'high', 'low', 'close', 'volume']
+        missing_columns = set(required_columns) - set(data.columns)
+        if missing_columns:
+            raise DataValidationError(
+                f"回测数据缺少必需的列: {missing_columns}",
+                validation_errors=[f"缺少列: {col}" for col in missing_columns]
+            )
+        
+        if len(data) < 2:
+            raise DataValidationError(
+                f"回测数据至少需要2条记录，当前: {len(data)}",
+                validation_errors=["数据量不足"]
+            )
+        
+        engine: BacktestEngine = BacktestEngine(
             self.initial_capital, self.commission, self.slippage,
             self.quantity_precision
         )
 
-        pending_signal = None  # 上一根K线产生的待执行信号
+        pending_signal: Optional[str] = None  # 上一根K线产生的待执行信号
 
-        for i in range(len(data)):
-            row = data.iloc[i]
-            current_close = row['close']
-            current_open = row['open']
+        try:
+            for i in range(len(data)):
+                row: pd.Series = data.iloc[i]
+                current_close: float = row['close']
+                current_open: float = row['open']
 
-            # 先用当前K线收盘价更新权益（反映浮动盈亏）
-            if not engine.update_equity(current_close):
-                # 爆仓，强制平仓并终止
-                engine.close_position(row.name, current_close, reason="爆仓强平")
-                break
+                # 先用当前K线收盘价更新权益（反映浮动盈亏）
+                if not engine.update_equity(current_close):
+                    # 爆仓，强制平仓并终止
+                    engine.close_position(row.name, current_close, reason="爆仓强平")
+                    break
 
-            # 基于当前K线数据产生信号，传入引擎实际持仓状态
-            current_position_side = engine.position.side.value  # 'long', 'short', 'flat'
-            entry_price = engine.position.entry_price if engine.position.side != PositionSide.FLAT else None
-            signal = strategy_func(data, i, position_side=current_position_side,
-                                   entry_price=entry_price, **strategy_params)
+                # 基于当前K线数据产生信号，传入引擎实际持仓状态
+                current_position_side: str = engine.position.side.value  # 'long', 'short', 'flat'
+                entry_price: Optional[float] = engine.position.entry_price if engine.position.side != PositionSide.FLAT else None
+                
+                try:
+                    signal: str = strategy_func(data, i, position_side=current_position_side,
+                                           entry_price=entry_price, **strategy_params)
+                except Exception as e:
+                    logger.error(f"策略信号生成异常 (index={i}): {e}")
+                    raise BacktestError(
+                        f"策略信号生成异常: {str(e)}",
+                        details={"index": i, "strategy_params": strategy_params}
+                    )
 
-            # 执行上一根K线产生的待执行信号（在当前K线开盘价成交）
-            if pending_signal is not None and i > 0:
-                exec_price = current_open  # 下一根K线开盘价成交
-                total_equity = engine.capital + engine._calc_market_value(exec_price)
+                # 执行上一根K线产生的待执行信号（在当前K线开盘价成交）
+                if pending_signal is not None and i > 0:
+                    exec_price: float = current_open  # 下一根K线开盘价成交
+                    total_equity: float = engine.capital + engine._calc_market_value(exec_price)
 
-                if pending_signal == 'long' and engine.position.side != PositionSide.LONG:
-                    quantity = (total_equity * 0.5) / exec_price
-                    quantity = self._round_quantity(quantity)
-                    if quantity > 0:
-                        engine.open_long(row.name, exec_price, quantity, reason=f"策略信号:{pending_signal}")
+                    try:
+                        if pending_signal == 'long' and engine.position.side != PositionSide.LONG:
+                            quantity: float = (total_equity * 0.5) / exec_price
+                            quantity = self._round_quantity(quantity)
+                            if quantity > 0:
+                                engine.open_long(row.name, exec_price, quantity, reason=f"策略信号:{pending_signal}")
 
-                elif pending_signal == 'short' and engine.position.side != PositionSide.SHORT:
-                    quantity = (total_equity * 0.5) / exec_price
-                    quantity = self._round_quantity(quantity)
-                    if quantity > 0:
-                        engine.open_short(row.name, exec_price, quantity, reason=f"策略信号:{pending_signal}")
+                        elif pending_signal == 'short' and engine.position.side != PositionSide.SHORT:
+                            quantity = (total_equity * 0.5) / exec_price
+                            quantity = self._round_quantity(quantity)
+                            if quantity > 0:
+                                engine.open_short(row.name, exec_price, quantity, reason=f"策略信号:{pending_signal}")
 
-                elif pending_signal == 'close' and engine.position.side != PositionSide.FLAT:
-                    engine.close_position(row.name, exec_price, reason=f"策略信号:{pending_signal}")
+                        elif pending_signal == 'close' and engine.position.side != PositionSide.FLAT:
+                            engine.close_position(row.name, exec_price, reason=f"策略信号:{pending_signal}")
+                    except Exception as e:
+                        logger.error(f"执行交易信号异常 (index={i}, signal={pending_signal}): {e}")
+                        raise BacktestError(
+                            f"执行交易信号异常: {str(e)}",
+                            details={"index": i, "signal": pending_signal, "exec_price": exec_price}
+                        )
 
-                pending_signal = None
+                    pending_signal = None
 
-            # 记录本根K线产生的信号，等下一根K线开盘执行
-            if signal in ('long', 'short', 'close'):
-                pending_signal = signal
+                # 记录本根K线产生的信号，等下一根K线开盘执行
+                if signal in ('long', 'short', 'close'):
+                    pending_signal = signal
 
-        # 回测结束时，如果还有待执行信号或持仓，用最后一根K线收盘价处理
-        if engine.position.side != PositionSide.FLAT:
-            last_price = data.iloc[-1]['close']
-            engine.close_position(data.iloc[-1].name, last_price, reason="回测结束")
+            # 回测结束时，如果还有待执行信号或持仓，用最后一根K线收盘价处理
+            if engine.position.side != PositionSide.FLAT:
+                last_price: float = data.iloc[-1]['close']
+                engine.close_position(data.iloc[-1].name, last_price, reason="回测结束")
 
-        return engine.calculate_metrics()
+            return engine.calculate_metrics()
+        except Exception as e:
+            if isinstance(e, (DataNotFoundError, DataValidationError, BacktestError)):
+                raise
+            logger.error(f"回测执行异常: {e}")
+            raise BacktestError(
+                f"回测执行异常: {str(e)}",
+                details={"data_length": len(data), "strategy_params": strategy_params}
+            )
 
     def _round_quantity(self, quantity: float) -> float:
-        """根据交易品种规则截断数量精度（向下取整到指定小数位）"""
-        factor = 10 ** self.quantity_precision
+        """
+        根据交易品种规则截断数量精度（向下取整到指定小数位）
+        
+        Args:
+            quantity: 原始数量
+            
+        Returns:
+            截断后的数量
+        """
+        factor: int = 10 ** self.quantity_precision
         return math.floor(quantity * factor) / factor

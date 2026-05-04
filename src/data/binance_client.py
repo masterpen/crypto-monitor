@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
 
+from ..exceptions import APIError, DataNotFoundError, DataValidationError, ConnectionError, TimeoutError
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,11 +56,32 @@ class BinanceClient:
         headers = {'X-MBX-APIKEY': self.api_key}
         url = f"{self.base_url}{endpoint}"
         
-        async with self.session.get(url, params=params, headers=headers) as resp:
-            data = await resp.json()
-            if resp.status != 200:
-                print(f"Error: {data}")
-            return data
+        try:
+            async with self.session.get(url, params=params, headers=headers) as resp:
+                data = await resp.json()
+                if resp.status != 200:
+                    error_msg = data.get('msg', '未知错误')
+                    error_code = data.get('code', 'UNKNOWN')
+                    raise APIError(
+                        message=f"API请求失败: {endpoint} - {error_msg}",
+                        status_code=resp.status,
+                        response_data=data,
+                        endpoint=endpoint,
+                        error_code=error_code
+                    )
+                return data
+        except aiohttp.ClientError as e:
+            raise ConnectionError(
+                message=f"网络连接错误: {endpoint}",
+                host=self.base_url,
+                details={"original_error": str(e)}
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                message=f"API请求超时: {endpoint}",
+                operation="signed_get",
+                details={"endpoint": endpoint}
+            )
 
     async def get_account(self) -> dict:
         """获取账户信息"""
@@ -99,7 +122,21 @@ class BinanceClient:
             limit: 数据条数，最大1000
             start_time: 开始时间戳（毫秒）
             end_time: 结束时间戳（毫秒）
+            
+        Returns:
+            K线数据DataFrame
+            
+        Raises:
+            APIError: API请求失败
+            DataNotFoundError: 未找到数据
+            DataValidationError: 数据验证失败
         """
+        if limit > 1000:
+            raise DataValidationError(
+                f"limit不能超过1000，当前值: {limit}",
+                validation_errors=["limit超出限制"]
+            )
+        
         params = {
             "symbol": symbol,
             "interval": interval,
@@ -111,10 +148,39 @@ class BinanceClient:
             params["endTime"] = end_time
         
         url = f"{self.base_url}/klines"
-        async with self.session.get(url, params=params) as response:
-            if response.status != 200:
-                raise Exception(f"API请求失败: {response.status}")
-            data = await response.json()
+        
+        try:
+            async with self.session.get(url, params=params) as response:
+                if response.status != 200:
+                    error_data = await response.json()
+                    error_msg = error_data.get('msg', '未知错误')
+                    raise APIError(
+                        message=f"获取K线数据失败: {symbol} {interval}",
+                        status_code=response.status,
+                        response_data=error_data,
+                        symbol=symbol,
+                        endpoint="/klines"
+                    )
+                data = await response.json()
+        except aiohttp.ClientError as e:
+            raise ConnectionError(
+                message=f"网络连接错误: 获取K线数据",
+                host=self.base_url,
+                details={"symbol": symbol, "interval": interval, "original_error": str(e)}
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                message=f"获取K线数据超时: {symbol} {interval}",
+                operation="get_klines",
+                details={"symbol": symbol, "interval": interval}
+            )
+        
+        if not data:
+            raise DataNotFoundError(
+                f"未找到K线数据: {symbol} {interval}",
+                symbol=symbol,
+                timeframe=interval
+            )
         
         # 转换为DataFrame
         df = pd.DataFrame(data, columns=[

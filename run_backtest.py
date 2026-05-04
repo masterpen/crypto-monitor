@@ -11,12 +11,11 @@ from src.strategies import (
     KDJStrategy, KDJCrossStrategy,
     KDJExitAtK50, KDJExitOverbought, KDJExitWithSLTP
 )
+from src.logging_config import setup_logging, get_logger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# 使用统一的日志配置
+setup_logging(log_dir="logs", default_level=logging.INFO)
+logger = get_logger(__name__)
 
 
 STRATEGIES = {
@@ -31,10 +30,11 @@ STRATEGIES = {
 }
 
 
-def run_backtest(symbol: str, strategy_name: str, days: int, initial_capital: float = 10000):
+def run_backtest(symbol: str, strategy_name: str, days: int, initial_capital: float = 10000,
+                 use_cache: bool = True):
     logger.info(f"开始回测: {symbol} - {strategy_name}")
 
-    data = fetch_klines(symbol, '1h', days)
+    data = fetch_klines(symbol, '1h', days, use_cache=use_cache)
 
     if data is None or len(data) == 0:
         logger.error("无法获取数据")
@@ -83,9 +83,11 @@ def main():
                         choices=list(STRATEGIES.keys()), help='策略名称')
     parser.add_argument('--days', type=int, default=90, help='回测天数')
     parser.add_argument('--capital', type=float, default=10000, help='初始资金')
+    parser.add_argument('--no-cache', action='store_true', help='不使用本地缓存，强制重新拉取')
 
     args = parser.parse_args()
-    run_backtest(args.symbol, args.strategy, args.days, args.capital)
+    run_backtest(args.symbol, args.strategy, args.days, args.capital,
+                 use_cache=not args.no_cache)
 
 
 if __name__ == "__main__":

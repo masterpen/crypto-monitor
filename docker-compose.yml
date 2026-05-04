@@ -1,0 +1,160 @@
+# 量化交易系统 Docker Compose 配置
+version: '3.8'
+
+services:
+  # 主交易服务
+  trading:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quant-trading
+    restart: unless-stopped
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - LOG_LEVEL=INFO
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=quant_db
+      - POSTGRES_USER=quant
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - quant-network
+
+  # 回测服务
+  backtest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quant-backtest
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=INFO
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=quant_db
+      - POSTGRES_USER=quant
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    command: ["python", "run_backtest.py", "--help"]
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - quant-network
+
+  # Dashboard 服务
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quant-dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - LOG_LEVEL=INFO
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=quant_db
+      - POSTGRES_USER=quant
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    command: ["streamlit", "run", "dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - quant-network
+
+  # Redis 服务
+  redis:
+    image: redis:7-alpine
+    container_name: quant-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - quant-network
+
+  # PostgreSQL 服务
+  postgres:
+    image: postgres:15-alpine
+    container_name: quant-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=quant_db
+      - POSTGRES_USER=quant
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - quant-network
+
+  # 监控服务
+  monitoring:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quant-monitoring
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=INFO
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=quant_db
+      - POSTGRES_USER=quant
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    command: ["python", "-m", "src.monitoring"]
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - quant-network
+
+# 数据卷
+volumes:
+  redis-data:
+    driver: local
+  postgres-data:
+    driver: local
+
+# 网络
+networks:
+  quant-network:
+    driver: bridge

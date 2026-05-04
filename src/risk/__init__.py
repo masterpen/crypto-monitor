@@ -4,10 +4,18 @@
 """
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
 import logging
+
+from .dynamic_risk import (
+    DynamicRiskManager,
+    DynamicRiskConfig,
+    VolatilityConfig,
+    VolatilityCalculator,
+    DynamicPositionSizer
+)
 
 logger = logging.getLogger(__name__)
 
@@ -427,3 +435,17 @@ class AlertManager:
     def clear_alerts(self):
         """清除告警历史"""
         self.alerts = []
+
+
+__all__ = [
+    'RiskConfig',
+    'RiskMetrics',
+    'RiskManager',
+    'PositionSizer',
+    'AlertManager',
+    'DynamicRiskManager',
+    'DynamicRiskConfig',
+    'VolatilityConfig',
+    'VolatilityCalculator',
+    'DynamicPositionSizer',
+]

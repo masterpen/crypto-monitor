@@ -13,6 +13,8 @@ from .kdj_cross import KDJCrossStrategy
 from .kdj_exit import KDJExitAtK50, KDJExitOverbought, KDJExitWithSLTP
 from .volume_surge import VolumeSurgeStrategy
 from .ensemble import StrategyEnsemble
+from .optimizer import StrategyOptimizer, OptimizationResult, optimize_strategy
+from .comparator import StrategyComparator, StrategyComparisonResult, compare_strategies
 
 __all__ = [
     'BaseStrategy',
@@ -29,4 +31,10 @@ __all__ = [
     'KDJExitWithSLTP',
     'VolumeSurgeStrategy',
     'StrategyEnsemble',
+    'StrategyOptimizer',
+    'OptimizationResult',
+    'optimize_strategy',
+    'StrategyComparator',
+    'StrategyComparisonResult',
+    'compare_strategies',
 ]

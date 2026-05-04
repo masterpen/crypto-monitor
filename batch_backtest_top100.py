@@ -44,13 +44,14 @@ STRATEGY_CHOICES = {
 
 def _backtest_single(args):
     """全局函数（ProcessPoolExecutor 需要可 pickle）"""
-    symbol, strategy_kwargs, days = args
-    return backtest_symbol(symbol, strategy_kwargs, days)
+    symbol, strategy_kwargs, days, use_cache = args
+    return backtest_symbol(symbol, strategy_kwargs, days, use_cache)
 
 
-def backtest_symbol(symbol: str, strategy_kwargs: dict, days: int = 90) -> dict:
+def backtest_symbol(symbol: str, strategy_kwargs: dict, days: int = 90,
+                    use_cache: bool = True) -> dict:
     try:
-        data = fetch_klines(symbol, '1h', days)
+        data = fetch_klines(symbol, '1h', days, use_cache=use_cache)
         if data is None or len(data) < 50:
             return {'symbol': symbol, 'error': '数据不足'}
 
@@ -160,12 +161,14 @@ def main():
     parser.add_argument('--start', type=int, default=1, help='币种排名起始位')
     parser.add_argument('--end', type=int, default=100, help='币种排名结束位')
     parser.add_argument('--workers', type=int, default=0, help='并发数（0=自动）')
+    parser.add_argument('--no-cache', action='store_true', help='不使用本地缓存，强制重新拉取')
 
     args = parser.parse_args()
     days = args.days
     rank_start = args.start
     rank_end = args.end
     max_workers = args.workers or None
+    use_cache = not args.no_cache
 
     if args.strategy == 'all':
         strategy_list = [(k, v[0], v[1]) for k, v in STRATEGY_CHOICES.items() if v[0] != 'ALL']
@@ -189,7 +192,7 @@ def main():
         done = 0
 
         strategy_kwargs = {'name': sname, 'class': sclass}
-        task_args = [(sym, strategy_kwargs, days) for sym in symbols]
+        task_args = [(sym, strategy_kwargs, days, use_cache) for sym in symbols]
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_backtest_single, ta): ta[0] for ta in task_args}

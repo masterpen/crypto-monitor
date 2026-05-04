@@ -12,12 +12,11 @@ from src.data.binance_client import BinanceClient, WebSocketClient
 from src.strategies import TrendStrategy, MACDStrategy, MeanReversionStrategy, RSIStrategy
 from src.engine import TradingEngine, OrderSide, OrderType
 from src.risk import RiskManager, RiskConfig
+from src.logging_config import setup_logging, get_logger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# 使用统一的日志配置
+setup_logging(log_dir="logs", default_level=logging.INFO)
+logger = get_logger(__name__)
 
 
 def load_config():
