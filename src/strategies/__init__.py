@@ -15,6 +15,16 @@ from .volume_surge import VolumeSurgeStrategy
 from .ensemble import StrategyEnsemble
 from .optimizer import StrategyOptimizer, OptimizationResult, optimize_strategy
 from .comparator import StrategyComparator, StrategyComparisonResult, compare_strategies
+from .crypto_trend import (
+    CryptoTrendStrategy,
+    CryptoTrendWithMTF,
+    MultiTimeframeAnalyzer,
+    CryptoIndicators,
+    VolatilityAdaptiveParams,
+    TrendDirection,
+    TimeframeSignal,
+    MultiTimeframeResult
+)
 
 __all__ = [
     'BaseStrategy',
@@ -37,4 +47,12 @@ __all__ = [
     'StrategyComparator',
     'StrategyComparisonResult',
     'compare_strategies',
+    'CryptoTrendStrategy',
+    'CryptoTrendWithMTF',
+    'MultiTimeframeAnalyzer',
+    'CryptoIndicators',
+    'VolatilityAdaptiveParams',
+    'TrendDirection',
+    'TimeframeSignal',
+    'MultiTimeframeResult',
 ]
