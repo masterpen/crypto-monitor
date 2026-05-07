@@ -49,7 +49,7 @@ class MultiTimeframeResult:
 
 
 class CryptoIndicators:
-    """加密货币技术指标"""
+    """加密货币技术指标（兼容版，推荐使用 FastIndicators）"""
     
     @staticmethod
     def ema(series: pd.Series, period: int) -> pd.Series:
@@ -64,10 +64,12 @@ class CryptoIndicators:
     @staticmethod
     def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
         """平均真实范围"""
-        tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ], axis=1).max(axis=1)
         return tr.rolling(window=period).mean()
     
     @staticmethod
@@ -80,9 +82,11 @@ class CryptoIndicators:
     def rsi(close: pd.Series, period: int = 14) -> pd.Series:
         """RSI指标"""
         delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta.where(delta < 0, 0.0))
+        avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
+        avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
+        rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
     
     @staticmethod
@@ -90,24 +94,21 @@ class CryptoIndicators:
         """ADX趋势强度指标"""
         plus_dm = high.diff()
         minus_dm = -low.diff()
-        
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm < 0] = 0
+        plus_dm = plus_dm.where(plus_dm > 0, 0.0)
+        minus_dm = minus_dm.where(minus_dm > 0, 0.0)
         
         tr = pd.concat([
             high - low,
-            abs(high - close.shift(1)),
-            abs(low - close.shift(1))
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs()
         ], axis=1).max(axis=1)
         
-        atr = tr.rolling(window=period).mean()
-        plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-        minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+        atr = tr.ewm(alpha=1/period, min_periods=period).mean()
+        plus_di = 100 * plus_dm.ewm(alpha=1/period, min_periods=period).mean() / atr
+        minus_di = 100 * minus_dm.ewm(alpha=1/period, min_periods=period).mean() / atr
         
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-        adx = dx.rolling(window=period).mean()
-        
-        return adx
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        return dx.ewm(alpha=1/period, min_periods=period).mean()
     
     @staticmethod
     def bollinger_bands(close: pd.Series, period: int = 20, std_dev: float = 2.0) -> Tuple[pd.Series, pd.Series, pd.Series]:
@@ -121,33 +122,10 @@ class CryptoIndicators:
     @staticmethod
     def supertrend(high: pd.Series, low: pd.Series, close: pd.Series, 
                    period: int = 10, multiplier: float = 3.0) -> pd.Series:
-        """超级趋势指标"""
-        atr = CryptoIndicators.atr(high, low, close, period)
-        
-        hl2 = (high + low) / 2
-        upper_band = hl2 + multiplier * atr
-        lower_band = hl2 - multiplier * atr
-        
-        supertrend = pd.Series(index=close.index, dtype=float)
-        direction = pd.Series(index=close.index, dtype=int)
-        
-        supertrend.iloc[0] = upper_band.iloc[0]
-        direction.iloc[0] = -1
-        
-        for i in range(1, len(close)):
-            if close.iloc[i] > upper_band.iloc[i-1]:
-                direction.iloc[i] = 1
-            elif close.iloc[i] < lower_band.iloc[i-1]:
-                direction.iloc[i] = -1
-            else:
-                direction.iloc[i] = direction.iloc[i-1]
-            
-            if direction.iloc[i] == 1:
-                supertrend.iloc[i] = lower_band.iloc[i]
-            else:
-                supertrend.iloc[i] = upper_band.iloc[i]
-        
-        return supertrend
+        """超级趋势指标（向量化版本）"""
+        # 使用 FastIndicators 的向量化实现
+        from .fast_indicators import FastIndicators
+        return FastIndicators.supertrend_vectorized(high, low, close, period, multiplier)
 
 
 class VolatilityAdaptiveParams:
@@ -355,6 +333,18 @@ class CryptoTrendStrategy(BaseStrategy):
         
         return direction, strength
     
+    def _get_cached_indicators(self, data: pd.DataFrame) -> Dict[str, pd.Series]:
+        """获取缓存的指标（避免重复计算）"""
+        cache_key = id(data)
+        
+        if not hasattr(self, '_indicator_cache'):
+            self._indicator_cache = {}
+        
+        if cache_key not in self._indicator_cache:
+            self._indicator_cache[cache_key] = self._calculate_indicators(data)
+        
+        return self._indicator_cache[cache_key]
+    
     def generate_signal(self, data: pd.DataFrame, index: int, 
                        position_side: str = 'flat', 
                        entry_price: Optional[float] = None, **kwargs) -> str:
@@ -375,8 +365,8 @@ class CryptoTrendStrategy(BaseStrategy):
             if index < self.slow_period + 10:
                 return 'hold'
             
-            # 计算指标
-            indicators = self._calculate_indicators(data.iloc[:index+1])
+            # 使用缓存的指标
+            indicators = self._get_cached_indicators(data)
             
             close = data['close'].iloc[index]
             ma_fast = indicators['ma_fast'].iloc[index]

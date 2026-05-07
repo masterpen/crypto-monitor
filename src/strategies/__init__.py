@@ -25,6 +25,13 @@ from .crypto_trend import (
     TimeframeSignal,
     MultiTimeframeResult
 )
+from .fast_indicators import (
+    FastIndicators,
+    VectorizedCryptoIndicators,
+    ParallelBacktester,
+    BacktestResult,
+    optimize_strategy_parallel
+)
 
 __all__ = [
     'BaseStrategy',
@@ -55,4 +62,9 @@ __all__ = [
     'TrendDirection',
     'TimeframeSignal',
     'MultiTimeframeResult',
+    'FastIndicators',
+    'VectorizedCryptoIndicators',
+    'ParallelBacktester',
+    'BacktestResult',
+    'optimize_strategy_parallel',
 ]
