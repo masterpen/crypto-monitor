@@ -30,20 +30,24 @@ class FactorStrategy:
     因子组合策略
     
     基于评估结果:
-    - atr_ratio: |IC|=0.137, IR=0.33 (最佳)
-    - volatility: |IC|=0.05, 波动率预测
-    - 使用4h/1d周期
+    - atr_ratio: IC=+0.10, IR=0.24 (正向，高ATR比率→高收益)
+    - volatility: IC=-0.12, IR=-0.26 (负向，高波动→低收益，低波异象)
+    
+    注意: volatility 需要取反！
     """
     
     def __init__(
         self,
-        # 因子权重
-        atr_ratio_weight: float = 0.6,
-        volatility_weight: float = 0.4,
+        # 因子权重（基于IC/IR自动计算或手动指定）
+        atr_ratio_weight: float = None,
+        volatility_weight: float = None,
+        # 因子IC（用于自动权重计算）
+        atr_ratio_ic: float = 0.10,
+        volatility_ic: float = -0.12,  # 注意是负的！
         # 进入阈值
         entry_threshold: float = 0.5,
         # 退出阈值
-        exit_threshold: float = 0.0,
+        exit_threshold: float = 0.2,  # 提高退出阈值，减少噪音
         # 止损止盈
         stop_loss_pct: float = 0.03,
         take_profit_pct: float = 0.06,
@@ -55,8 +59,19 @@ class FactorStrategy:
         volatility_period: int = 20,
         lookback_period: int = 50,
     ):
-        self.atr_ratio_weight = atr_ratio_weight
-        self.volatility_weight = volatility_weight
+        # 自动计算权重（基于IC绝对值）
+        if atr_ratio_weight is None or volatility_weight is None:
+            total_ic = abs(atr_ratio_ic) + abs(volatility_ic)
+            self.atr_ratio_weight = abs(atr_ratio_ic) / total_ic
+            self.volatility_weight = abs(volatility_ic) / total_ic
+        else:
+            self.atr_ratio_weight = atr_ratio_weight
+            self.volatility_weight = volatility_weight
+        
+        # 保存IC方向
+        self.atr_ratio_ic_sign = 1 if atr_ratio_ic >= 0 else -1
+        self.volatility_ic_sign = 1 if volatility_ic >= 0 else -1
+        
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
         self.stop_loss_pct = stop_loss_pct
@@ -98,6 +113,10 @@ class FactorStrategy:
         """
         计算综合因子得分
         
+        重要：根据IC方向调整因子符号
+        - atr_ratio IC > 0: 值越高 → 看多（保持原方向）
+        - volatility IC < 0: 值越高 → 看空（需要取反）
+        
         Returns:
             得分范围 [-1, 1]，正值做多，负值做空
         """
@@ -110,11 +129,15 @@ class FactorStrategy:
         if index >= len(atr_norm) or pd.isna(atr_norm.iloc[index]):
             return 0.0
         
-        # 综合得分
-        # atr_ratio: IC正向，值越高越看多
-        # volatility: 值越高，市场越活跃
-        atr_score = atr_norm.iloc[index]
-        vol_score = vol_norm.iloc[index]
+        # 获取原始标准化值
+        atr_raw = atr_norm.iloc[index]
+        vol_raw = vol_norm.iloc[index]
+        
+        # 根据IC方向调整符号
+        # IC > 0: 因子值高 → 收益高，保持原方向
+        # IC < 0: 因子值高 → 收益低，需要取反
+        atr_score = atr_raw * self.atr_ratio_ic_sign
+        vol_score = vol_raw * self.volatility_ic_sign
         
         # 加权组合
         composite = (
@@ -123,7 +146,8 @@ class FactorStrategy:
         )
         
         # 归一化到 [-1, 1]
-        return np.clip(composite / 2, -1, 1)
+        # 理论最大值 = 0.5*3 + 0.5*3 = 3，但我们用更保守的除数
+        return np.clip(composite / 1.5, -1, 1)
     
     def generate_signal(
         self,
@@ -181,12 +205,8 @@ class FactorStrategy:
             if entry_price and current_price > entry_price * (1 + self.take_profit_pct):
                 return 'close'
             
-            # 信号反转退出
+            # 信号反转退出：得分降到退出阈值以下
             if score < self.exit_threshold:
-                return 'close'
-            
-            # 得分大幅下降退出
-            if score < -0.3:
                 return 'close'
         
         elif position_side == 'short':
@@ -198,32 +218,35 @@ class FactorStrategy:
             if entry_price and current_price < entry_price * (1 - self.take_profit_pct):
                 return 'close'
             
-            # 信号反转退出
+            # 信号反转退出：得分升到退出阈值以上
             if score > -self.exit_threshold:
-                return 'close'
-            
-            # 得分大幅上升退出
-            if score > 0.3:
                 return 'close'
         
         return 'hold'
     
     def _calculate_atr(self, data: pd.DataFrame, index: int) -> float:
-        """计算ATR"""
-        if index < self.atr_period:
+        """计算ATR（修复shift问题）"""
+        if index < self.atr_period + 1:
             return 0.0
         
-        high = data['high'].iloc[max(0, index-self.atr_period):index+1]
-        low = data['low'].iloc[max(0, index-self.atr_period):index+1]
-        close = data['close'].iloc[max(0, index-self.atr_period):index+1]
+        # 多取一根K线用于shift计算
+        start = max(0, index - self.atr_period - 1)
+        high = data['high'].iloc[start:index+1].values
+        low = data['low'].iloc[start:index+1].values
+        close = data['close'].iloc[start:index+1].values
         
-        tr = pd.concat([
-            high - low,
-            (high - close.shift(1)).abs(),
-            (low - close.shift(1)).abs()
-        ], axis=1).max(axis=1)
+        # 计算True Range
+        tr = np.zeros(len(high))
+        tr[0] = high[0] - low[0]
+        for i in range(1, len(high)):
+            tr[i] = max(
+                high[i] - low[i],
+                abs(high[i] - close[i-1]),
+                abs(low[i] - close[i-1])
+            )
         
-        return tr.mean()
+        # 返回ATR（去掉第一根）
+        return np.mean(tr[1:])
     
     def calculate_position_size(
         self,
@@ -245,7 +268,7 @@ class FactorStrategy:
         return min(position_size, max_position)
     
     def get_analysis(self, data: pd.DataFrame, index: int) -> Dict:
-        """获取分析详情"""
+        """获取分析详情（包含IC方向信息）"""
         if index < self.lookback_period:
             return {'score': 0, 'factors': {}}
         
@@ -253,12 +276,34 @@ class FactorStrategy:
         atr_norm = self._normalize_factor(factors['atr_ratio'])
         vol_norm = self._normalize_factor(factors['volatility'])
         
+        # 原始标准化值
+        atr_raw = atr_norm.iloc[index] if index < len(atr_norm) else 0
+        vol_raw = vol_norm.iloc[index] if index < len(vol_norm) else 0
+        
+        # 调整后的值（考虑IC方向）
+        atr_adjusted = atr_raw * self.atr_ratio_ic_sign
+        vol_adjusted = vol_raw * self.volatility_ic_sign
+        
         return {
             'score': self._calculate_composite_score(data, index),
-            'atr_ratio': factors['atr_ratio'].iloc[index],
-            'atr_ratio_norm': atr_norm.iloc[index] if index < len(atr_norm) else 0,
-            'volatility': factors['volatility'].iloc[index],
-            'volatility_norm': vol_norm.iloc[index] if index < len(vol_norm) else 0,
+            'weights': {
+                'atr_ratio': self.atr_ratio_weight,
+                'volatility': self.volatility_weight,
+            },
+            'ic_direction': {
+                'atr_ratio': 'positive' if self.atr_ratio_ic_sign > 0 else 'negative',
+                'volatility': 'positive' if self.volatility_ic_sign > 0 else 'negative',
+            },
+            'atr_ratio': {
+                'raw': factors['atr_ratio'].iloc[index],
+                'normalized': atr_raw,
+                'adjusted': atr_adjusted,  # 考虑IC方向后的值
+            },
+            'volatility': {
+                'raw': factors['volatility'].iloc[index],
+                'normalized': vol_raw,
+                'adjusted': vol_adjusted,  # 考虑IC方向后的值
+            },
         }
 
 
