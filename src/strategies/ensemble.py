@@ -32,13 +32,14 @@ class StrategyEnsemble:
         self.strategies.append(strategy)
         self.weights[strategy.name] = weight
 
-    def generate_signal(self, data: pd.DataFrame, index: int) -> str:
+    def generate_signal(self, data: pd.DataFrame, index: int, **kwargs) -> str:
         """
         生成组合信号
         
         Args:
             data: K线数据
             index: 当前索引
+            **kwargs: 其他参数（如 position_side, entry_price）
             
         Returns:
             组合信号
@@ -50,7 +51,7 @@ class StrategyEnsemble:
 
         for strategy in self.strategies:
             try:
-                signal: str = strategy.generate_signal(data, index)
+                signal: str = strategy.generate_signal(data, index, **kwargs)
                 weight: float = self.weights.get(strategy.name, 1.0)
                 if signal in votes:
                     votes[signal] += weight
@@ -67,13 +68,14 @@ class StrategyEnsemble:
 
         return best_signal
 
-    def get_signal_details(self, data: pd.DataFrame, index: int) -> Dict[str, Any]:
+    def get_signal_details(self, data: pd.DataFrame, index: int, **kwargs) -> Dict[str, Any]:
         """
         获取信号详情
         
         Args:
             data: K线数据
             index: 当前索引
+            **kwargs: 其他参数
             
         Returns:
             信号详情字典
@@ -81,7 +83,7 @@ class StrategyEnsemble:
         details: Dict[str, Any] = {}
         for strategy in self.strategies:
             try:
-                signal: str = strategy.generate_signal(data, index)
+                signal: str = strategy.generate_signal(data, index, **kwargs)
                 details[strategy.name] = {
                     'signal': signal,
                     'weight': self.weights.get(strategy.name, 1.0),

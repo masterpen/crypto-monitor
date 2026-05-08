@@ -56,41 +56,68 @@ class FactorEvaluator:
         """计算未来 period 根K线的收益率"""
         return self.data['close'].shift(-period) / self.data['close'] - 1
 
-    def calc_ic(self, forward_period: int = 24, method: str = 'spearman') -> pd.Series:
+    def calc_ic(self, forward_period: int = 24, method: str = 'spearman',
+                window: int = 60) -> pd.Series:
         """
-        滚动IC序列（逐行计算因子值与未来收益的秩相关系数）
+        滚动IC序列
 
         Args:
             forward_period: 预测未来N根K线的收益
             method: 'spearman' (秩相关) 或 'pearson' (线性相关)
+            window: 滚动窗口大小
 
         Returns:
-            IC序列（每行对应一个时间点的IC值，使用滚动窗口）
+            IC序列（每个时间点对应一个IC值）
         """
-        fv = self.factor_values.dropna()
-        fr = self._forward_return(forward_period).dropna()
+        fv = self.factor_values
+        fr = self._forward_return(forward_period)
 
         # 对齐索引
-        common_idx = fv.index.intersection(fr.index)
+        common_idx = fv.dropna().index.intersection(fr.dropna().index)
         fv = fv.loc[common_idx]
         fr = fr.loc[common_idx]
 
-        if method == 'spearman':
-            # 秩相关 = 对排名后的序列计算 pearson 相关（无需 scipy）
-            ic = fv.rank().corr(fr.rank(), method='pearson')
-            return pd.Series([ic], index=[fv.index[-1] if len(fv) > 0 else 0])
-        else:
-            ic = fv.corr(fr, method='pearson')
-            return pd.Series([ic], index=[fv.index[-1] if len(fv) > 0 else 0])
+        if len(fv) < window:
+            return pd.Series(dtype=float)
 
-    def evaluate(self, forward_period: int = 24, method: str = 'spearman') -> Tuple[float, float, float]:
+        # 滚动计算IC
+        rolling_ics = []
+        for i in range(window, len(fv)):
+            fv_slice = fv.iloc[i - window:i]
+            fr_slice = fr.iloc[i - window:i]
+
+            if method == 'spearman':
+                # 秩相关 = 对排名后的序列计算 pearson 相关
+                ic = fv_slice.rank().corr(fr_slice.rank(), method='pearson')
+            else:
+                ic = fv_slice.corr(fr_slice, method='pearson')
+
+            rolling_ics.append({'time': fv.index[i], 'ic': ic})
+
+        if not rolling_ics:
+            return pd.Series(dtype=float)
+
+        return pd.Series({r['time']: r['ic'] for r in rolling_ics})
+
+    def evaluate(self, forward_period: int = 24, method: str = 'spearman',
+                 window: int = 60) -> Tuple[float, float, float]:
         """
-        因子评估（单币种单次评估）
+        因子评估
+
+        Args:
+            forward_period: 预测周期
+            method: 相关方法
+            window: 滚动窗口大小
 
         Returns:
             (ic_mean, ic_std, ir): IC均值、IC标准差、信息比率
         """
-        ic_series = self.calc_ic(forward_period=forward_period, method=method)
+        ic_series = self.calc_ic(forward_period=forward_period, method=method, window=window)
+        ic_series = ic_series.dropna()
+
+        if len(ic_series) == 0:
+            return 0.0, 0.0, 0.0
+
         ic_mean = ic_series.mean()
         ic_std = ic_series.std()
         ir = ic_mean / ic_std if ic_std != 0 and not pd.isna(ic_std) else 0.0
