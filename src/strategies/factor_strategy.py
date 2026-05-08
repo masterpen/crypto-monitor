@@ -1,6 +1,8 @@
 """
 因子组合策略 - 基于IC/IR评估结果构建
 用于前10加密货币回测验证
+
+重要: 所有计算只使用历史数据，不使用未来函数
 """
 import pandas as pd
 import numpy as np
@@ -10,6 +12,7 @@ import logging
 
 from src.factors import FactorRegistry, FactorBase
 from src.factors.builtin import register_builtin_factors
+from src.market_state import MarketStateDetector, MarketState
 
 register_builtin_factors()
 
@@ -58,6 +61,10 @@ class FactorStrategy:
         atr_period: int = 14,
         volatility_period: int = 20,
         lookback_period: int = 50,
+        # 市场状态过滤
+        use_market_state: bool = True,
+        bull_only: bool = False,
+        bear_only: bool = False,
     ):
         # 自动计算权重（基于IC绝对值）
         if atr_ratio_weight is None or volatility_weight is None:
@@ -82,9 +89,22 @@ class FactorStrategy:
         self.volatility_period = volatility_period
         self.lookback_period = lookback_period
         
+        # 市场状态过滤
+        self.use_market_state = use_market_state
+        self.bull_only = bull_only
+        self.bear_only = bear_only
+        
         # 获取因子
         self.atr_factor = FactorRegistry.get('atr_ratio', period=atr_period)
         self.vol_factor = FactorRegistry.get('volatility', period=volatility_period)
+        
+        # 市场状态检测器
+        self.market_detector = MarketStateDetector(
+            fast_period=20,
+            slow_period=50,
+            adx_period=14,
+            adx_threshold=25.0
+        )
         
         # 缓存
         self._factor_cache = {}
@@ -160,6 +180,8 @@ class FactorStrategy:
         """
         生成交易信号
         
+        重要: 只使用 data[:index+1] 的数据，不使用未来函数
+        
         Args:
             data: K线数据
             index: 当前索引
@@ -172,7 +194,7 @@ class FactorStrategy:
         if index < self.lookback_period:
             return 'hold'
         
-        # 计算综合得分
+        # 计算综合得分（只使用历史数据）
         score = self._calculate_composite_score(data, index)
         
         # 当前价格
@@ -180,6 +202,22 @@ class FactorStrategy:
         
         # 计算ATR用于止损
         atr = self._calculate_atr(data, index)
+        
+        # 市场状态检测（只使用历史数据）
+        market_state = None
+        if self.use_market_state:
+            market_state = self.market_detector.detect(data, index)
+            
+            # 市场状态过滤
+            if self.bull_only and market_state.state != MarketState.BULL:
+                # 只在牛市交易，非牛市不开新仓
+                if position_side == 'flat':
+                    return 'hold'
+            
+            if self.bear_only and market_state.state != MarketState.BEAR:
+                # 只在熊市交易，非熊市不开新仓
+                if position_side == 'flat':
+                    return 'hold'
         
         # ============================================================
         # 进入信号
@@ -208,6 +246,10 @@ class FactorStrategy:
             # 信号反转退出：得分降到退出阈值以下
             if score < self.exit_threshold:
                 return 'close'
+            
+            # 市场状态反转退出（牛市转熊市）
+            if market_state and market_state.state == MarketState.BEAR:
+                return 'close'
         
         elif position_side == 'short':
             # 止损
@@ -220,6 +262,10 @@ class FactorStrategy:
             
             # 信号反转退出：得分升到退出阈值以上
             if score > -self.exit_threshold:
+                return 'close'
+            
+            # 市场状态反转退出（熊市转牛市）
+            if market_state and market_state.state == MarketState.BULL:
                 return 'close'
         
         return 'hold'
