@@ -32,6 +32,12 @@ from .fast_indicators import (
     BacktestResult,
     optimize_strategy_parallel
 )
+from .factor_strategy import (
+    FactorStrategy,
+    FactorStrategyWithTrend,
+    create_factor_strategy,
+    create_factor_strategy_with_trend
+)
 
 __all__ = [
     'BaseStrategy',
