@@ -289,3 +289,168 @@ class DemarkSequential:
             return SignalResult('九转', Signal.NEUTRAL, 0.3, seq['setup_buy'].iloc[idx])
         
         return SignalResult('九转', Signal.NEUTRAL, 0, seq['setup_buy'].iloc[idx])
+
+
+# ═══════════════════════════════════════════════════════════
+#  BosWaves - 弯曲半径超级趋势
+# ═══════════════════════════════════════════════════════════
+class BosWavesSignal:
+    """
+    弯曲半径超级趋势 [BOSWaves]
+    
+    基于标准Supertrend，但用抛物线加速度取代线性ATR带。
+    趋势转向时从锚点开始加速弯曲，跟随价格动量曲线。
+    
+    推荐参数（1H）: radius_strength=0.16, smoothness=5
+    """
+    
+    def __init__(
+        self,
+        atr_length: int = 14,
+        atr_mult: float = 2.0,
+        radius_strength: float = 0.16,   # 1H推荐值
+        smoothness: int = 5,
+    ):
+        self.atr_length = atr_length
+        self.atr_mult = atr_mult
+        self.radius_strength = radius_strength
+        self.smoothness = smoothness
+        self._cache = {}
+    
+    def _calc_supertrend(self, data: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+        """标准Supertrend计算（基础方向检测）"""
+        high = data['high'].values
+        low = data['low'].values
+        close = data['close'].values
+        n = len(close)
+        
+        # ATR
+        tr = np.zeros(n)
+        tr[0] = high[0] - low[0]
+        for i in range(1, n):
+            tr[i] = max(high[i]-low[i], abs(high[i]-close[i-1]), abs(low[i]-close[i-1]))
+        atr = pd.Series(tr).rolling(self.atr_length).mean().values
+        
+        # 基础波段
+        hl2 = (high + low) / 2
+        upper = hl2 + self.atr_mult * atr
+        lower = hl2 - self.atr_mult * atr
+        
+        # 标准Supertrend
+        direction = np.ones(n, dtype=int)
+        supertrend = np.zeros(n)
+        
+        supertrend[0] = lower[0]
+        direction[0] = 1
+        
+        for i in range(1, n):
+            lt = close[i] < lower[i-1]  # 价格跌破下轨
+            gt = close[i] > upper[i-1]  # 价格涨破上轨
+            
+            if direction[i-1] == 1:
+                # 上升中
+                if lt:
+                    direction[i] = -1
+                    supertrend[i] = upper[i]
+                else:
+                    direction[i] = 1
+                    supertrend[i] = max(lower[i], supertrend[i-1])
+            else:
+                # 下降中
+                if gt:
+                    direction[i] = 1
+                    supertrend[i] = lower[i]
+                else:
+                    direction[i] = -1
+                    supertrend[i] = min(upper[i], supertrend[i-1])
+        
+        return pd.Series(supertrend, index=data.index), pd.Series(direction, index=data.index)
+    
+    def calculate(self, data: pd.DataFrame) -> pd.DataFrame:
+        """计算弯曲半径超级趋势"""
+        st_band, direction = self._calc_supertrend(data)
+        
+        close = data['close'].values
+        n = len(close)
+        
+        # 弯曲半径计算
+        curved = np.zeros(n)
+        anchor_price = st_band.values[0] if pd.notna(st_band.values[0]) else close[0]
+        velocity = 0.0
+        bar_count = 0
+        prev_direction = 1
+        
+        for i in range(n):
+            curr_dir = int(direction.iloc[i]) if pd.notna(direction.iloc[i]) else 1
+            trend_changed = (curr_dir != prev_direction)
+            
+            if trend_changed or i == 0:
+                # 趋势转向 → 重置锚点
+                anchor_price = st_band.iloc[i] if pd.notna(st_band.iloc[i]) else close[i]
+                velocity = 0.0
+                bar_count = 0
+            
+            bar_count += 1
+            # 抛物线加速度: v += radius * n
+            velocity += self.radius_strength * bar_count
+            
+            if curr_dir == 1:
+                curved[i] = anchor_price + velocity
+            else:
+                curved[i] = anchor_price - velocity
+            
+            prev_direction = curr_dir
+        
+        # SMA平滑
+        curved_series = pd.Series(curved, index=data.index)
+        smoothed = curved_series.rolling(self.smoothness).mean().fillna(curved_series)
+        
+        # 更新方向检测（基于平滑后的曲线）
+        new_direction = pd.Series(1, index=data.index)
+        for i in range(1, n):
+            if close[i] < smoothed.iloc[i]:
+                new_direction.iloc[i] = -1
+            else:
+                new_direction.iloc[i] = 1
+        
+        return pd.DataFrame({
+            'band': smoothed,
+            'direction': new_direction,
+            'raw_supertrend': st_band,
+        }, index=data.index)
+    
+    def signal_at(self, data: pd.DataFrame, idx: int) -> SignalResult:
+        """生成信号：趋势转向点"""
+        if idx < self.atr_length + 5:
+            return SignalResult('BosWaves', Signal.NEUTRAL, 0, 0)
+        
+        did = id(data)
+        if did not in self._cache:
+            self._cache[did] = self.calculate(data)
+        
+        result = self._cache[did]
+        direction = result['direction']
+        close = data['close'].iloc[idx]
+        band = result['band'].iloc[idx]
+        
+        if idx < 2:
+            return SignalResult('BosWaves', Signal.NEUTRAL, 0, 0)
+        
+        curr_dir = int(direction.iloc[idx])
+        prev_dir = int(direction.iloc[idx-1])
+        trend_changed = (curr_dir != prev_dir)
+        
+        # 趋势转向信号
+        if trend_changed:
+            deviation = (close - band) / band if band > 0 else 0
+            
+            if curr_dir == 1:
+                # 转为上升趋势 → 买入
+                return SignalResult('BosWaves', Signal.BUY, 0.8, deviation)
+            else:
+                # 转为下降趋势 → 卖出
+                return SignalResult('BosWaves', Signal.SELL, 0.8, deviation)
+        
+        # 趋势持续中
+        deviation = (close - band) / band if band > 0 else 0
+        return SignalResult('BosWaves', Signal.NEUTRAL, 0, deviation)

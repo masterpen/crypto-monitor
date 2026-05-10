@@ -21,16 +21,14 @@ class SignalComboStrategy:
     
     def __init__(
         self,
-        # 信号权重
         weights: Dict[str, float] = None,
-        # 共振阈值
         min_votes: int = 2,
-        # 止损止盈
         stop_loss: float = 0.03,
         take_profit: float = 0.06,
+        extra_signals: Dict = None,
     ):
         self.weights = weights or {
-            '九转': 0.30,    # 最重要
+            '九转': 0.30,
             'KDJ': 0.20,
             'MACD': 0.20,
             'RSI': 0.15,
@@ -40,7 +38,7 @@ class SignalComboStrategy:
         self.stop_loss = stop_loss
         self.take_profit = take_profit
         
-        # 信号生成器
+        # 默认信号生成器
         self.signals = {
             'KDJ': KDJSignal(period=9),
             'MACD': MACDSignal(),
@@ -49,7 +47,13 @@ class SignalComboStrategy:
             '九转': DemarkSequential(),
         }
         
-        # 缓存
+        # 合并额外信号
+        if extra_signals:
+            for name, sig in extra_signals.items():
+                self.signals[name] = sig
+                if name not in self.weights:
+                    self.weights[name] = 0.1
+        
         self._cache = {}
     
     def _all_signals(self, data, idx) -> List[SignalResult]:
