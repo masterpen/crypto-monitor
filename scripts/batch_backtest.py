@@ -1,6 +1,10 @@
 """
 批量回测 Binance 前100币种的所有策略表现，支持多策略对比
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import argparse
 import logging
 import math

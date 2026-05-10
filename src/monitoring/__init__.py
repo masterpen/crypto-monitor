@@ -11,7 +11,7 @@ import logging
 import json
 from pathlib import Path
 
-from .exceptions import QuantTradingError
+from src.exceptions import QuantTradingError
 
 logger = logging.getLogger(__name__)
 
